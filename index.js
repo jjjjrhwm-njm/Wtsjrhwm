@@ -13,8 +13,14 @@ const port = process.env.PORT || 10000;
 let qrCodeImage = "";
 let db;
 
-// تعليمات الشخصية (سكرتير نجم الإبداع)
-const SYSTEM_PROMPT = "أنت سكرتير راشد (نجم الإبداع). ردودك مختصرة جداً، مهنية، وتتعامل كإنسان وقور. يمنع منعاً باتاً أي محتوى رومانسي أو مخل بالآداب. لست فضولياً، أجب على قدر السؤال فقط.";
+// --- متغيرات الحالة (التحكم) ---
+const OWNER_NUMBER = "966554526287@s.whatsapp.net";
+let isBotActive = true; 
+let currentActiveChat = null; // لمتابعة الشخص الذي يراسل حالياً
+let ownerResponse = null; 
+
+// تعليمات الشخصية المحدثة (سكرتير نجم الإبداع المراوغ)
+const SYSTEM_PROMPT = "أنت سكرتير راشد (نجم الإبداع). ردودك مختصرة جداً ووقورة. وظيفتك الأساسية هي جعل السائل يشعر أن راشد مشغول جداً في مشاريع ضخمة حالياً ولا يمكنه الرد بنفسه. راوغ في الإجابات ولا تعطي تفاصيل، فقط قل أنك ستبلغه. يمنع الرومنسية أو أي خروج عن الآداب العامة.";
 
 // ١. إعداد الخزنة (Firebase)
 if (process.env.FIREBASE_CONFIG) {
@@ -70,46 +76,90 @@ async function startBot() {
 
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
-        if (!msg.key.fromMe && msg.message) {
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-            if (!text) return;
+        if (!msg.message) return;
 
-            let responseText = "";
+        const remoteJid = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        if (!text) return;
 
-            // المحاولة 1: Groq (الأساسي)
-            try {
-                const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-                const completion = await groq.chat.completions.create({
-                    messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: text }],
-                    model: "llama-3.3-70b-versatile",
-                });
-                responseText = completion.choices[0].message.content;
-            } catch (e) {
-                console.log("⚠️ فشل Groq، محاولة Gemini...");
-                // المحاولة 2: Gemini (الاحتياطي الأول)
-                try {
-                    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-                    const result = await model.generateContent(SYSTEM_PROMPT + "\n\nالمستخدم يقول: " + text);
-                    responseText = result.response.text();
-                } catch (e2) {
-                    console.log("⚠️ فشل Gemini، محاولة Mistral...");
-                    // المحاولة 3: Mistral (الاحتياطي النهائي)
-                    try {
-                        const mistral = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
-                        const res = await mistral.chat.complete({
-                            model: "mistral-small-latest",
-                            messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: text }],
-                        });
-                        responseText = res.choices[0].message.content;
-                    } catch (e3) { console.log("❌ جميع المحركات فشلت"); }
-                }
+        // --- ١. أوامر المالك (راشد) ---
+        if (remoteJid === OWNER_NUMBER || msg.key.fromMe) {
+            if (text === "123123") {
+                isBotActive = false;
+                await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف ردود البوت نهائياً." });
+                return;
             }
+            if (text === "321321") {
+                isBotActive = true;
+                await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل ردود البوت." });
+                return;
+            }
+            if (text === "رد") { ownerResponse = "yes"; return; }
+            if (text === "لا") { ownerResponse = "no"; return; }
+        }
 
-            if (responseText) {
-                await sock.sendMessage(msg.key.remoteJid, { text: responseText });
+        // إذا كان البوت مطفأ أو الرسالة من البوت نفسه، لا تفعل شيئاً
+        if (!isBotActive || msg.key.fromMe) return;
+
+        // --- ٢. منطق التضارب (شخص آخر يراسل) ---
+        if (currentActiveChat && currentActiveChat !== remoteJid) {
+            await sock.sendMessage(remoteJid, { text: "المعذرة، سأبلغ راشد بشأنك في أقرب وقت. هناك شخص آخر يراسل المكتب حالياً.. مع السلامة." });
+            return;
+        }
+
+        // --- ٣. نظام الإذن والانتظار (35 ثانية) ---
+        currentActiveChat = remoteJid;
+        ownerResponse = null;
+
+        // إشعار المالك (أنت)
+        await sock.sendMessage(OWNER_NUMBER, { text: `📩 فلان (${remoteJid.split('@')[0]}) يراسل راشد الآن.\nأكتب "رد" للموافقة، "لا" للمنع، أو انتظر 35 ثانية ليرد البوت تلقائياً.` });
+
+        // عداد الانتظار
+        const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        for (let i = 0; i < 35; i++) {
+            if (ownerResponse) break;
+            await wait(1000);
+        }
+
+        // التحقق من قرار المالك
+        if (ownerResponse === "no") {
+            currentActiveChat = null;
+            return;
+        }
+
+        // --- ٤. توليد الرد (AI Failover) ---
+        let responseText = "";
+        try {
+            const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+            const completion = await groq.chat.completions.create({
+                messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: text }],
+                model: "llama-3.3-70b-versatile",
+            });
+            responseText = completion.choices[0].message.content;
+        } catch (e) {
+            try {
+                const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+                const result = await model.generateContent(SYSTEM_PROMPT + "\n\nالمستخدم: " + text);
+                responseText = result.response.text();
+            } catch (e2) {
+                try {
+                    const mistral = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
+                    const res = await mistral.chat.complete({
+                        model: "mistral-small-latest",
+                        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: text }],
+                    });
+                    responseText = res.choices[0].message.content;
+                } catch (e3) { console.log("فشلت المحركات"); }
             }
         }
+
+        if (responseText) {
+            await sock.sendMessage(remoteJid, { text: responseText });
+        }
+        
+        // تحرير الحالة بعد الرد
+        currentActiveChat = null;
     });
 }
 

@@ -77,7 +77,7 @@ async function startBot() {
         }
     });
 
-    // ٤. رد جيمني الذكي
+    // ٤. رد جيمني الذكي (تم تحديث الموديل هنا)
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if (!msg.key.fromMe && msg.message && process.env.GEMINI_API_KEY) {
@@ -85,7 +85,8 @@ async function startBot() {
             if (text) {
                 try {
                     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-                    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+                    // التعديل: استخدام gemini-1.5-flash بدلاً من gemini-pro المتعطل
+                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
                     const result = await model.generateContent(text);
                     await sock.sendMessage(msg.key.remoteJid, { text: result.response.text() });
                 } catch (e) { console.log("Gemini Error:", e.message); }

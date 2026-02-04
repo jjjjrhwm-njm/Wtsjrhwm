@@ -13,12 +13,12 @@ const port = process.env.PORT || 10000;
 let qrCodeImage = "";
 let db;
 
-// --- إعدادات الأرقام والحالات ---
-const OWNER_NUMBER = "966554526287@s.whatsapp.net";
-const WIFE_NUMBER = "967782203551@s.whatsapp.net";
-const WIFE2_NUMBER = "966599741982@s.whatsapp.net"; // الرقم الجديد (الزوجة الثانية)
-const FATHER_NUMBER = "967783015253@s.whatsapp.net";
-const EXEMPT_NUMBER = "966554526287@s.whatsapp.net"; 
+// --- إعدادات الأرقام السرية (يتم سحبها من Render Environment) ---
+const OWNER_NUMBER = (process.env.OWNER_NUMBER || "966554526287") + "@s.whatsapp.net";
+const WIFE_NUMBER = (process.env.WIFE_NUMBER || "967782203551") + "@s.whatsapp.net";
+const WIFE2_NUMBER = (process.env.WIFE2_NUMBER || "966599741982") + "@s.whatsapp.net";
+const FATHER_NUMBER = (process.env.FATHER_NUMBER || "967783015253") + "@s.whatsapp.net";
+const EXEMPT_NUMBER = OWNER_NUMBER; 
 
 let isBotActive = true; 
 let currentlyReplyingTo = null; 
@@ -45,16 +45,49 @@ if (process.env.FIREBASE_CONFIG) {
 }
 
 async function startBot() {
+    // التأكد من وجود المجلد
+    if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
+
+    // --- منطق استعادة الجلسة لعدم طلب الرمز مجدداً ---
+    if (db) {
+        try {
+            const doc = await db.collection('session').doc('whatsapp').get();
+            if (doc.exists) {
+                fs.writeFileSync('./auth_info/creds.json', JSON.stringify(doc.data()));
+                console.log("📂 تم استعادة ملف الدخول من الخزنة بنجاح");
+            }
+        } catch (e) { console.log("⚠️ فشل سحب الجلسة أو لا توجد جلسة محفوظة"); }
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const { version } = await fetchLatestBaileysVersion();
-    const sock = makeWASocket({ version, auth: state, printQRInTerminal: false, browser: ["Mac OS", "Chrome", "114.0.5735.198"] });
+    
+    const sock = makeWASocket({
+        version,
+        auth: state,
+        printQRInTerminal: false,
+        browser: ["Mac OS", "Chrome", "114.0.5735.198"] 
+    });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        // حفظ التحديثات فوراً في الخزنة
+        if (db && fs.existsSync('./auth_info/creds.json')) {
+            try {
+                const creds = JSON.parse(fs.readFileSync('./auth_info/creds.json'));
+                await db.collection('session').doc('whatsapp').set(creds);
+            } catch (e) { console.log("❌ فشل حفظ التحديثات في الخزنة"); }
+        }
+    });
+
     sock.ev.on('connection.update', (update) => {
         const { connection, qr } = update;
         if (qr) QRCode.toDataURL(qr, (err, url) => { qrCodeImage = url; });
-        if (connection === 'open') qrCodeImage = "DONE";
-        if (connection === 'close') startBot();
+        if (connection === 'open') { qrCodeImage = "DONE"; console.log("✅ متصل الآن وشغال!"); }
+        if (connection === 'close') {
+            const shouldReconnect = update.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startBot();
+        }
     });
 
     sock.ev.on('messages.upsert', async m => {

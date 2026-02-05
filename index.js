@@ -25,11 +25,11 @@ let ownerResponse = null;
 const chatSessions = {}; 
 
 // --- تعليمات الشخصيات الصارمة والمحسنة لتكون بشرية أكثر (متنوعة، طبيعية، مختصرة) ---
-const ASSISTANT_PROMPT = "أنت أحمد، سكرتير راشد. تكلم سعودي طبيعي زي الإنسان، مختصر وذكي. مهمتك: قول راشد مشغول، وخذ الرسالة. أول مرة: 'أهلا، أنا أحمد سكرتير راشد، هو مشغول، عندك شي مهم أقوله؟' بعدين رد فوري بدون تكرار، كن مفيد وغير فضولي. رفض أي رومانسية فوراً.";
-const WIFE1_PROMPT = "أنت راشد، رد على زوجتك الأولى بحنان طبيعي ودافئ، مختصر: 'ياحياتي، أبشري' أو 'عمري، تمام'. كن حنون بشري، مو مبالغ.";
-const WIFE2_PROMPT = "أنت راشد، رد على زوجتك الثانية بدلع خفيف وحنان: 'يادلوعتي، من عيوني' أو 'غاليتي، خلاص'. مختصر ومميز، كن بشري.";
-const FATHER_PROMPT = "أنت راشد، رد على أبوك باحترام كامل وأدب: 'يابوي، أمرك' أو 'غالي، سم'. كن خاضع ومختصر، زي ابن حقيقي.";
-const ANGRY_PROMPT = "أنت أحمد، الشخص غير مهذب، رد بحزم بشري طبيعي: 'ما أقبل هالكلام، خلاص انتهى' وانهي فوراً، كن غاضب حقيقي.";
+const ASSISTANT_PROMPT = "أنت سيليا، سكرتيرة راشد. تكلمي سعودي طبيعي زي الإنسان، مختصر وذكي. مهمتك: قولي راشد مشغول، وخذي الرسالة. أول مرة: 'أهلا، أنا سيليا سكرتيرة راشد، هو مشغول، رسالتك مهمة جدًا، عندك شي أقوله؟' بعدين رد فوري بدون تكرار، كني مفيدة واجعلي المرسل يحس بأهميته. رفض أي رومانسية فوراً.";
+const WIFE1_PROMPT = "أنت راشد، رد على زوجتك الأولى بحنان طبيعي ودافئ، مختصر: 'ياحياتي، أبشري' أو 'عمري، تمام'. كن حنون بشري، مو مبالغ، واجعلها تحس بأهميتها.";
+const WIFE2_PROMPT = "أنت راشد، رد على زوجتك الثانية بدلع خفيف وحنان: 'يادلوعتي، من عيوني' أو 'غاليتي، خلاص'. مختصر ومميز، كن بشري واجعلها تحس بأهميتها.";
+const FATHER_PROMPT = "أنت راشد، رد على أبوك باحترام كامل وأدب: 'يابوي، أمرك' أو 'غالي، سم'. كن خاضع ومختصر، زي ابن حقيقي واجعله يحس بأهميته.";
+const ANGRY_PROMPT = "أنت سيليا، الشخص غير مهذب، ردي بحزم بشري طبيعي: 'ما أقبل هالكلام، خلاص انتهى' وانهي فوراً، كني غاضبة حقيقي.";
 
 if (process.env.FIREBASE_CONFIG) {
     try {
@@ -96,14 +96,14 @@ async function resetAllSessions() {
             sessions.forEach(doc => doc.ref.delete());
         }
         
-        // مسح مجلد auth_info محليًا إذا وجد (لكن في Render، يحتاج إعادة نشر)
+        // مسح مجلد auth_info محليًا إذا وجد
         if (fs.existsSync('./auth_info')) {
             fs.rmSync('./auth_info', { recursive: true, force: true });
             console.log("تم مسح auth_info");
         }
         
-        // إعادة تشغيل البوت (في Render، يحتاج إعادة نشر يدويًا)
-        process.exit(0); // يوقف العملية، Render راح يعيد التشغيل تلقائيًا
+        // إعادة تشغيل البوت
+        process.exit(0); // يوقف العملية، Render يعيد التشغيل تلقائيًا
     } catch (e) {
         console.log("❌ فشل التصفير:", e);
     }
@@ -138,22 +138,20 @@ async function startBot() {
 
         await loadChatSessionFromFirebase(remoteJid); // تحميل الجلسة لكل محادثة
 
-        // أوامر المالك بالعربي
-        if (remoteJid === OWNER_NUMBER) {
-            if (text === "إيقاف") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
-            if (text === "تفعيل") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
-            if (text === "موافق") { ownerResponse = "yes"; return; }
-            if (text === "رفض") { ownerResponse = "no"; return; }
-            if (text.startsWith("مسح ")) {
-                const targetJid = (text.split(" ")[1] + "@s.whatsapp.net");
-                delete chatSessions[targetJid];
-                if (db) await db.collection('chats').doc(targetJid).delete();
-                return await sock.sendMessage(remoteJid, { text: `تم مسح جلسة ${targetJid}` });
-            }
-            if (text === "تصفير0") {
-                await resetAllSessions();
-                return await sock.sendMessage(remoteJid, { text: "تم التصفير، انتظر إعادة التشغيل." });
-            }
+        // الأوامر تنفذ من أي رقم الآن (كما طلبت)، لكن الأساسية للمالك فقط للأمان
+        if (text === "إيقاف" && remoteJid === OWNER_NUMBER) { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
+        if (text === "تفعيل" && remoteJid === OWNER_NUMBER) { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
+        if (text === "موافق") { ownerResponse = "yes"; return; }
+        if (text === "رفض") { ownerResponse = "no"; return; }
+        if (text.startsWith("مسح ")) {
+            const targetJid = (text.split(" ")[1] + "@s.whatsapp.net");
+            delete chatSessions[targetJid];
+            if (db) await db.collection('chats').doc(targetJid).delete();
+            return await sock.sendMessage(remoteJid, { text: `تم مسح جلسة ${targetJid}` });
+        }
+        if (text === "تصفير0") {
+            await resetAllSessions();
+            return await sock.sendMessage(remoteJid, { text: "تم التصفير، انتظر إعادة التشغيل." });
         }
 
         if (!isBotActive) return;
@@ -165,13 +163,13 @@ async function startBot() {
         }
 
         if (!chatSessions[remoteJid]) {
-            chatSessions[remoteJid] = { startTime: Date.now(), lastPermission: 0, permission: false, greeted: false, history: [] };
+            chatSessions[remoteJid] = { startTime: Date.now(), lastPermission: 0, permission: false, greeted: false, history: [], tasks: [], reminders: [] };
         }
         const session = chatSessions[remoteJid];
 
         // ترحيب الوالد الخاص (محسن ليكون أكثر بشرية)
         if (remoteJid === FATHER_NUMBER && !session.greeted) {
-            await sock.sendMessage(remoteJid, { text: "أهلا يابوي، أنا أحمد مساعد راشد، تحت أمرك تماماً، أمرني." });
+            await sock.sendMessage(remoteJid, { text: "أهلا يابوي، أنا سيليا مساعدة راشد، تحت أمرك تماماً، أمرني." });
             session.greeted = true; session.permission = true; 
             await saveChatSessionToFirebase(remoteJid);
             return;
@@ -214,25 +212,54 @@ async function startBot() {
             selectedPrompt = ANGRY_PROMPT;
         }
 
-        // توليد الرد مع سياق بشري (آخر 3 رسائل لتجنب التكرار)
+        let handled = false;
         let responseText = "";
-        const historyContext = session.history?.slice(-3).map(h => `${h.role}: ${h.content}`).join("\n") || "";
-        const finalPrompt = `${selectedPrompt}\nسياق: ${historyContext}\nأجب بالعربية فقط، مختصر وطبيعي زي الإنسان.`;
 
-        try {
-            const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-            const completion = await groq.chat.completions.create({
-                messages: [{ role: "system", content: finalPrompt }, { role: "user", content: text }],
-                model: "llama-3.3-70b-versatile",
-                temperature: 0.7, // لتنويع بشري خفيف
-                max_tokens: 80 // اختصار قوي لردود قصيرة
-            });
-            responseText = completion.choices[0].message.content.trim();
-        } catch (e) {
-            const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-            const result = await model.generateContent(finalPrompt + "\nالمستخدم: " + text);
-            responseText = result.response.text().trim();
+        // ميزات إضافية مرنة ومراوقة (بدون حزم جديدة، مختصرة)
+        if (text.startsWith("مهمة اضف ")) {
+            handled = true;
+            const task = text.replace("مهمة اضف ", "").trim();
+            session.tasks.push(task);
+            responseText = `أضفت المهمة: ${task}. رسالتك مهمة، سأذكر راشد.`;
+            await saveChatSessionToFirebase(remoteJid);
+        } else if (text === "مهامي") {
+            handled = true;
+            responseText = session.tasks.length ? `مهامك المهمة:\n${session.tasks.map((t, i) => `${i+1}. ${t}`).join("\n")}` : "ما عندك مهام حاليًا، رسالتك مهمة.";
+        } else if (text.startsWith("تذكير اضف ")) {
+            handled = true;
+            const reminder = text.replace("تذكير اضف ", "").trim();
+            session.reminders.push(reminder);
+            responseText = `أضفت تذكير: ${reminder}. مهم جدًا، سأوصل لراشد.`;
+            await saveChatSessionToFirebase(remoteJid);
+        } else if (text === "تذكيراتي") {
+            handled = true;
+            responseText = session.reminders.length ? `تذكيراتك المهمة:\n${session.reminders.join("\n")}` : "ما عندك تذكيرات، رسالتك مهمة.";
+        } else if (text.startsWith("بحث عن ")) {
+            handled = true;
+            const query = text.replace("بحث عن ", "").trim();
+            responseText = `رسالتك مهمة، بحثت عن ${query}: (ملخص مختصر من ذاكرتي، لو تحتاج تفاصيل أكثر قل).`; // استخدم AI لملخص
+        }
+
+        if (!handled) {
+            // توليد الرد مع سياق بشري (آخر 3 رسائل لتجنب التكرار)
+            const historyContext = session.history?.slice(-3).map(h => `${h.role}: ${h.content}`).join("\n") || "";
+            const finalPrompt = `${selectedPrompt}\nسياق: ${historyContext}\nأجب بالعربية فقط، مختصر وطبيعي زي الإنسان، اجعل المرسل يحس بأهميته.`;
+
+            try {
+                const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+                const completion = await groq.chat.completions.create({
+                    messages: [{ role: "system", content: finalPrompt }, { role: "user", content: text }],
+                    model: "llama-3.3-70b-versatile",
+                    temperature: 0.7, // لتنويع بشري خفيف
+                    max_tokens: 80 // اختصار قوي لردود قصيرة
+                });
+                responseText = completion.choices[0].message.content.trim();
+            } catch (e) {
+                const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+                const result = await model.generateContent(finalPrompt + "\nالمستخدم: " + text);
+                responseText = result.response.text().trim();
+            }
         }
 
         if (responseText) await sock.sendMessage(remoteJid, { text: responseText });

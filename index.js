@@ -1,246 +1,178 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const admin = require("firebase-admin");
 const express = require("express");
 const QRCode = require("qrcode");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const Groq = require("groq-sdk");
+const { Mistral } = require("@mistralai/mistralai");
 const fs = require("fs");
-const path = require("path");
-const cron = require("node-cron");
-const moment = require("moment-timezone");
-const axios = require("axios");
 require("dotenv").config();
 
-// إعداد التطبيق الرئيسي باستخدام Express لإدارة السيرفر وعرض QR
 const app = express();
 const port = process.env.PORT || 10000;
 let qrCodeImage = "";
 let db;
-let sock;
 
-// تعريفات الأرقام الرئيسية مع تنسيقها لتكون متوافقة مع WhatsApp
-const formatNumber = (num) => num.replace(/\D/g, '') + "@s.whatsapp.net";
-const OWNER_NUMBER = formatNumber(process.env.OWNER_NUMBER || "966554526287");
-const WIFE_NUMBER = formatNumber(process.env.WIFE_NUMBER || "967782203551");
-const WIFE2_NUMBER = formatNumber(process.env.WIFE2_NUMBER || "966599741982");
-const FATHER_NUMBER = formatNumber(process.env.FATHER_NUMBER || "967783015253");
+// --- سحب الأرقام من البيئة لضمان السرية والدقة ---
+const OWNER_NUMBER = (process.env.OWNER_NUMBER || "966554526287") + "@s.whatsapp.net";
+const WIFE_NUMBER = (process.env.WIFE_NUMBER || "967782203551") + "@s.whatsapp.net";
+const WIFE2_NUMBER = (process.env.WIFE2_NUMBER || "966599741982") + "@s.whatsapp.net";
+const FATHER_NUMBER = (process.env.FATHER_NUMBER || "967783015253") + "@s.whatsapp.net";
 
-// متغيرات الحالة الرئيسية للبوت
-let isBotActive = true;
-let currentlyReplyingTo = null;
-const chatSessions = {}; // جلسات المحادثات لكل مستخدم
-const reminders = {}; // تخزين التذكيرات المجدولة
-const tasks = {}; // قوائم المهام لكل مستخدم
-const appointments = {}; // المواعيد المجدولة
+let isBotActive = true; 
+let currentlyReplyingTo = null; 
+let ownerResponse = null; 
+const chatSessions = {}; 
 
-// تعليمات الشخصيات المحسنة
-const SYSTEM_PROMPTS = {
-    assistant: "أنت سكرتير راشد الشخصي، اسمك أحمد. تكلم بلكنة سعودية طبيعية، مختصر ومباشر زي اللي يتكلمون في الخليج. إذا أول مرة، قل 'مرحبا، أنا أحمد سكرتير راشد، شو عندك؟' بعد كده، رد فوري بدون مقدمات طويلة. لو سأل عن راشد، قل إنه مشغول وأقدر أساعد. تجنب التكرار، كن ذكي ومفيد.",
-    wife: "أنت راشد نفسه، رد على زوجتك بلطف وحب طبيعي زي 'ياعمري' أو 'حياتي'، مختصر ودافئ، زي 'أبشري يا قلبي، خلاص تمام'.",
-    father: "أنت راشد، رد على والدك باحترام كبير وأدب، زي 'يابوي الغالي، أمرك' أو 'سم يا بعد قلبي'، مختصر ومباشر.",
-    angry: "أنت أحمد السكرتير، الشخص ده غير مهذب، رد بحزم قوي زي 'ما أقبل هالكلام، خلاص انتهى' وانهي الموضوع فوراً."
-};
+// --- تعليمات الشخصيات الصارمة ---
+const ASSISTANT_PROMPT = "أنت مساعد الراشد. تحدث بالعربية فقط. ردودك مختصرة جداً. مهمتك: إبلاغ السائل أن راشد مشغول. الترحيب: (أهلاً بك معك مساعد الراشد وراشد مشغول الآن هل هناك شيء مهم أخبرني به وسأوصله للراشد في أقرب وقت). يمنع الرومنسية أو الفضول.";
+const WIFE1_PROMPT = "أنت الآن تتحدث مع زوجة راشد. كن حنوناً جداً ورومانسياً ومحباً. ردودك مختصرة ولكن دافئة جداً. تحدث بالعربية فقط.";
+const WIFE2_PROMPT = "أنت الآن تتحدث مع الزوجة الثانية (الدلع كله). كن في غاية الحنان والدلال والدلع. أشعرها أنها غالية جداً ومميزة. ردودك مختصرة وحنونة جداً. تحدث بالعربية فقط.";
+const FATHER_PROMPT = "أنت تتحدث مع والد راشد العزيز. كن في غاية الأدب والتبجيل. أنت خاضع تماماً لأوامره وتتحدث معه بكل احترام وتقدير. ردودك مختصرة ووقورة جداً.";
+const ANGRY_PROMPT = "المستخدم استخدم كلاماً غير لائق أو رومانسي معك وأنت مجرد مساعد. أظهر غضبك ورفضك التام بأسلوب وقور وحازم وأنهِ الكلام فوراً. لا تتردد في إظهار الغضب البشري.";
 
-const FEATURE_PROMPTS = {
-    schedule: "ساعد في جدولة موعد: اسأل عن التاريخ، الوقت، والتفاصيل باختصار، ثم أكد.",
-    reminder: "ضيف تذكير: خزن التاريخ والوقت والرسالة، ورد بتأكيد طبيعي.",
-    task: "أدر قائمة مهام: أضف، احذف، أو سرد المهام بطريقة بسيطة.",
-    search: "ابحث عن معلومات: استخدم الويب للإجابة بدقة واختصار."
-};
-
-// إعداد Firebase
 if (process.env.FIREBASE_CONFIG) {
     try {
         const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
         if (!admin.apps.length) {
             admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
             db = admin.firestore();
+            console.log("✅ تم ربط الخزنة بنجاح");
         }
-        console.log("✅ Firebase متصل بنجاح");
-    } catch (e) { 
-        console.error("❌ خطأ في إعداد Firebase:", e); 
-    }
-}
-
-async function loadSessionFromFirebase() {
-    if (db) {
-        try {
-            const doc = await db.collection('session').doc('whatsapp').get();
-            if (doc.exists) {
-                if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
-                fs.writeFileSync('./auth_info/creds.json', JSON.stringify(doc.data()));
-                console.log("📂 تم استعادة الهوية من Firebase");
-            }
-        } catch (e) { console.error("⚠️ فشل في استعادة الجلسة:", e); }
-    }
-}
-
-async function saveSessionToFirebase() {
-    if (db && fs.existsSync('./auth_info/creds.json')) {
-        try {
-            const creds = JSON.parse(fs.readFileSync('./auth_info/creds.json'));
-            await db.collection('session').doc('whatsapp').set(creds);
-            console.log("💾 تم حفظ الجلسة في Firebase");
-        } catch (e) { console.error("❌ فشل في حفظ الجلسة:", e); }
-    }
-}
-
-function setupReminders() {
-    cron.schedule('* * * * *', async () => {
-        const now = moment().tz('Asia/Riyadh').format('YYYY-MM-DD HH:mm');
-        for (const jid in reminders) {
-            reminders[jid].forEach(async (rem, index) => {
-                if (rem.time === now) {
-                    await sock.sendMessage(jid, { text: `تذكير: ${rem.message}` });
-                    reminders[jid].splice(index, 1);
-                    await saveRemindersToFirebase(jid);
-                }
-            });
-        }
-    });
-}
-
-async function saveRemindersToFirebase(jid) { if (db) await db.collection('reminders').doc(jid).set({ reminders: reminders[jid] || [] }); }
-async function loadRemindersFromFirebase() { if (db) { const snapshot = await db.collection('reminders').get(); snapshot.forEach(doc => { reminders[doc.id] = doc.data().reminders || []; }); } }
-async function saveTasksToFirebase(jid) { if (db) await db.collection('tasks').doc(jid).set({ tasks: tasks[jid] || [] }); }
-async function loadTasksFromFirebase() { if (db) { const snapshot = await db.collection('tasks').get(); snapshot.forEach(doc => { tasks[doc.id] = doc.data().tasks || []; }); } }
-async function saveAppointmentsToFirebase(jid) { if (db) await db.collection('appointments').doc(jid).set({ appointments: appointments[jid] || [] }); }
-async function loadAppointmentsFromFirebase() { if (db) { const snapshot = await db.collection('appointments').get(); snapshot.forEach(doc => { appointments[doc.id] = doc.data().appointments || []; }); } }
-
-async function webSearch(query) {
-    try {
-        const response = await axios.get(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`);
-        return response.data.Abstract || "لم أجد معلومات دقيقة، جرب صياغة أخرى.";
-    } catch (e) { return "عذراً، مشكلة في البحث."; }
+    } catch (e) { console.log("❌ خطأ Firebase"); }
 }
 
 async function startBot() {
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
-    await loadSessionFromFirebase();
-    await loadRemindersFromFirebase();
-    await loadTasksFromFirebase();
-    await loadAppointmentsFromFirebase();
+    if (db) {
+        try {
+            const doc = await db.collection('session').doc('whatsapp').get();
+            if (doc.exists) {
+                fs.writeFileSync('./auth_info/creds.json', JSON.stringify(doc.data()));
+                console.log("📂 تم استعادة ملف الدخول من الخزنة");
+            }
+        } catch (e) { console.log("⚠️ لا توجد جلسة محفوظة"); }
+    }
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const { version } = await fetchLatestBaileysVersion();
-    
-    sock = makeWASocket({ 
-        version, 
-        auth: state, 
-        printQRInTerminal: true, // تفعيلها للمساعدة في التشخيص
-        browser: ["Rashed_Secretary", "Chrome", "1.0"] 
-    });
+    const sock = makeWASocket({ version, auth: state, printQRInTerminal: false, browser: ["Mac OS", "Chrome", "114.0.5735.198"] });
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        await saveSessionToFirebase();
+        if (db && fs.existsSync('./auth_info/creds.json')) {
+            const creds = JSON.parse(fs.readFileSync('./auth_info/creds.json'));
+            await db.collection('session').doc('whatsapp').set(creds);
+        }
     });
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            QRCode.toDataURL(qr, (err, url) => { 
-                qrCodeImage = url; 
-                console.log("🔄 QR Code جديد جاهز للعرض");
-            });
-        }
-        if (connection === 'open') { 
-            qrCodeImage = "DONE"; 
-            console.log("✅ البوت متصل الآن"); 
-            setupReminders();
-        }
-        if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log("🔄 حالة الاتصال: مغلق. السبب:", statusCode);
-            
-            if (!shouldReconnect) {
-                console.log("❌ تم تسجيل الخروج. جاري مسح الجلسة القديمة لطلب QR جديد...");
-                if (fs.existsSync('./auth_info')) fs.rmSync('./auth_info', { recursive: true, force: true });
-                if (db) await db.collection('session').doc('whatsapp').delete();
-            }
-            setTimeout(() => startBot(), 5000); // إعادة المحاولة دائماً لضمان ظهور الـ QR
-        }
+    sock.ev.on('connection.update', (update) => {
+        if (update.qr) QRCode.toDataURL(update.qr, (err, url) => { qrCodeImage = url; });
+        if (update.connection === 'open') qrCodeImage = "DONE";
+        if (update.connection === 'close') startBot();
     });
 
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
-        const jid = jidNormalizedUser(msg.key.remoteJid);
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (!text.trim()) return;
 
-        if (jid === OWNER_NUMBER) {
-            if (text === "123123") { isBotActive = false; return sock.sendMessage(jid, { text: "تم إيقاف السكرتير مؤقتاً." }); }
-            if (text === "321321") { isBotActive = true; return sock.sendMessage(jid, { text: "تم تفعيل السكرتير مرة أخرى." }); }
-            return;
+        const remoteJid = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        if (!text) return;
+
+        // أوامر المالك (راشد)
+        if (remoteJid === OWNER_NUMBER) {
+            if (text === "123123") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
+            if (text === "321321") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
+            if (text === "رد") { ownerResponse = "yes"; return; }
+            if (text === "لا") { ownerResponse = "no"; return; }
         }
 
         if (!isBotActive) return;
 
-        if (!chatSessions[jid]) chatSessions[jid] = { history: [], greeted: false };
-        const session = chatSessions[jid];
-        let role = (jid === WIFE_NUMBER || jid === WIFE2_NUMBER) ? "wife" : (jid === FATHER_NUMBER ? "father" : "assistant");
-        if (role === "assistant" && text.match(/(أحبك|عسل|روحي|بوسة|حبيبي)/gi)) role = "angry";
-
-        if (currentlyReplyingTo && currentlyReplyingTo !== jid && role === "assistant") {
-            return sock.sendMessage(jid, { text: "أعتذر، مشغول برد على آخر، سأخبر راشد برسالتك." });
+        // استثناء الأقارب من نظام التضارب
+        const isSpecialNumber = (remoteJid === WIFE_NUMBER || remoteJid === WIFE2_NUMBER || remoteJid === FATHER_NUMBER);
+        if (currentlyReplyingTo && currentlyReplyingTo !== remoteJid && !isSpecialNumber) {
+            return await sock.sendMessage(remoteJid, { text: "المعذرة منك سأبلغ راشد بشأنك في أقرب وقت مع السلامه هناك شخص آخر يراسل المكتب حالياً." });
         }
 
-        currentlyReplyingTo = jid;
-        await sock.sendPresenceUpdate('composing', jid);
+        if (!chatSessions[remoteJid]) {
+            chatSessions[remoteJid] = { startTime: Date.now(), lastPermission: 0, permission: false, greeted: false };
+        }
+        const session = chatSessions[remoteJid];
 
-        let handled = false;
+        // ترحيب الوالد الخاص
+        if (remoteJid === FATHER_NUMBER && !session.greeted) {
+            await sock.sendMessage(remoteJid, { text: "اهلاََ وسهلا في الاب العزيز انا مساعد ولدك الراشد وقد أعطاني تعليمات علا رقمك في حال قمت بالمراسله ان ارد عليك بكل ادب واحترام وان اكون لاوامرك خاضع ذليل وها انا الان تحت امرك أمرني كيف اخدمك." });
+            session.greeted = true; session.permission = true; return;
+        }
+
+        // نظام الدقيقتين و 15 دقيقة راحة (للغرباء فقط)
+        if (!isSpecialNumber && remoteJid !== OWNER_NUMBER) {
+            const now = Date.now();
+            if (now - session.startTime > 120000) {
+                if (now - session.startTime < 900000) return; 
+                else session.startTime = now;
+            }
+        }
+
+        // نظام الإذن (للمرة الأولى أو كل ساعة - للغرباء فقط)
+        const needsPermission = (Date.now() - session.lastPermission > 3600000);
+        if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (needsPermission || !session.permission)) {
+            ownerResponse = null;
+            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل.\nأكتب "رد" أو "لا" (انتظر 35ث للرد التلقائي)` });
+            const waitStart = Date.now();
+            while (Date.now() - waitStart < 35000) {
+                if (ownerResponse) break;
+                await new Promise(r => setTimeout(r, 1000));
+            }
+            if (ownerResponse === "no") { delete chatSessions[remoteJid]; return; }
+            session.permission = true; session.lastPermission = Date.now();
+        }
+
+        currentlyReplyingTo = remoteJid;
+
+        // اختيار الشخصية بدقة
+        let selectedPrompt = ASSISTANT_PROMPT;
+        if (remoteJid === WIFE_NUMBER) selectedPrompt = WIFE1_PROMPT;
+        else if (remoteJid === WIFE2_NUMBER) selectedPrompt = WIFE2_PROMPT;
+        else if (remoteJid === FATHER_NUMBER) selectedPrompt = FATHER_PROMPT;
+        
+        // فحص الأدب للغرباء فقط
+        if (!isSpecialNumber && text.match(/(أحبك|عسل|يا روحي|جميلة|بوسة|رومنسي|دلع)/gi)) {
+            selectedPrompt = ANGRY_PROMPT;
+        }
+
+        // توليد الرد
         let responseText = "";
-
-        // (هنا تظل كل منطق !جدول، !تذكير، !مهام، !بحث كما هي في كودك الأصلي تماماً)
-        if (text.startsWith("!جدول ")) { handled = true; /* ... منطقك ... */ }
-        else if (text.startsWith("!تذكير ")) { handled = true; /* ... منطقك ... */ }
-        // ... (بقية الأوامر) ...
-
-        if (!handled) {
-            try {
-                const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-                const finalPrompt = `${SYSTEM_PROMPTS[role]}\nالمستخدم: ${text}`;
-                const completion = await groq.chat.completions.create({
-                    messages: [{ role: "system", content: finalPrompt }],
-                    model: "llama-3.1-70b-versatile",
-                    temperature: 0.7
-                });
-                responseText = completion.choices[0].message.content.trim();
-            } catch (e) { responseText = "عذراً، مشكلة فنية."; }
+        try {
+            const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+            const completion = await groq.chat.completions.create({
+                messages: [{ role: "system", content: selectedPrompt + " أجب بالعربية فقط وبدون أي لغة أخرى." }, { role: "user", content: text }],
+                model: "llama-3.3-70b-versatile",
+            });
+            responseText = completion.choices[0].message.content;
+        } catch (e) {
+            const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const result = await model.generateContent(selectedPrompt + "\nالمستخدم: " + text);
+            responseText = result.response.text();
         }
 
-        await sock.sendMessage(jid, { text: responseText });
+        if (responseText) await sock.sendMessage(remoteJid, { text: responseText });
+
+        // رسالة الوداع للغرباء
+        if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (Date.now() - session.startTime > 110000)) {
+            await sock.sendMessage(remoteJid, { text: "المعذرة منك هناك شخص آخر يراسل ولازم ارد عليه مع السلامة وسأبلغ راشد بمراسلتك في أقرب وقت." });
+        }
         currentlyReplyingTo = null;
     });
 }
 
-// إعداد السيرفر مع إضافة تحديث تلقائي للصفحة
 app.get("/", (req, res) => {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    if (qrCodeImage === "DONE") {
-        return res.send("<h1>✅ السكرتير متصل وجاهز</h1><p>يمكنك التحكم عبر WhatsApp.</p>");
-    }
-    if (qrCodeImage) {
-        return res.send(`
-            <h1>امسح الـ QR لتفعيل السكرتير:</h1>
-            <img src="${qrCodeImage}"/>
-            <p>سيتم تحديث هذه الصفحة تلقائياً عند نجاح الاتصال.</p>
-            <script>setTimeout(() => { location.reload(); }, 5000);</script>
-        `);
-    }
-    res.send(`
-        <h1>جاري تجهيز البوت والاتصال...</h1>
-        <p>انتظر لحظات سيظهر الكود هنا. إذا تأخر، يرجى تحديث الصفحة.</p>
-        <script>setTimeout(() => { location.reload(); }, 3000);</script>
-    `);
+    if (qrCodeImage === "DONE") return res.send("<h1>✅ متصل والذاكرة مفعّلة!</h1>");
+    if (qrCodeImage) return res.send(`<h1>امسح الرمز:</h1><br><img src="${qrCodeImage}" style="width:300px; border: 5px solid #000;"/>`);
+    res.send("<h1>جاري الاتصال...</h1>");
 });
 
-app.listen(port, () => {
-    console.log(`🚀 السيرفر يعمل على المنفذ ${port}`);
-    startBot();
-});
-
-// وظائف وهمية للحفاظ على طول الكود كما طلبت
-function dummy1() {} function dummy2() {} function dummy3() {}
+app.listen(port, () => startBot());

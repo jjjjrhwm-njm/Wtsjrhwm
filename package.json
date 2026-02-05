@@ -6,13 +6,18 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
+    "@whiskeysockets/baileys": "^6.7.8",
     "qrcode": "^1.5.3",
     "express": "^4.18.2",
     "@google/generative-ai": "^0.21.0",
-    "dotenv": "^16.3.1",
-    "firebase-admin": "^12.0.0",
+    "dotenv": "^16.4.5",
+    "firebase-admin": "^12.6.0",
     "groq-sdk": "^0.12.0",
-    "@mistralai/mistralai": "^1.5.0"
+    "node-cron": "^3.0.3",
+    "moment-timezone": "^0.5.46",
+    "axios": "^1.7.7"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }

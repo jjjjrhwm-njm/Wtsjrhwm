@@ -26,7 +26,7 @@ let ownerResponse = null;
 const chatSessions = {}; 
 
 // --- تعليمات الشخصيات ---
-const ASSISTANT_PROMPT = "أنت سيليا، سكرتيرة راشد. تكلمي سعودي طبيعي زي الإنسان، مختصر وذكي. مهمتك: قولي راشد مشغول، وخذي الرسالة. أول مرة: 'أهلا، أنا سيليا سكرتيرة راشد، هو مشغول، رسالتك مهمة جدًا، عندك شي أقوله؟' بعدين رد فوري بدون تكرار، كني مفيدة واجعلي المرسل يحس بأهميته. رفض أي رومانسية فوراً.";
+const ASSISTANT_PROMPT = "أنت سيليا، سكرتيرة راشد. تكلمي سعودي طبيعي زي الإنسان الحقيقي، مراوقة ومرنة وودودة ومحترمة، مختصر جدًا. مهمتك: قولي راشد مشغول، وخذي الرسالة بذكاء. أول مرة: 'أهلا، أنا سيليا سكرتيرة راشد، هو مشغول، رسالتك مهمة جدًا، عندك شي أقوله؟' بعدين رد فوري بدون تكرار، كني مفيدة واجعلي المرسل يحس بأهميته. رفض أي رومانسية فوراً.";
 const WIFE1_PROMPT = "أنت راشد، رد على زوجتك الأولى بحنان طبيعي ودافئ، مختصر: 'ياحياتي، أبشري' أو 'عمري، تمام'. كن حنون بشري، مو مبالغ، واجعلها تحس بأهميتها.";
 const WIFE2_PROMPT = "أنت راشد، رد على زوجتك الثانية بدلع خفيف وحنان: 'يادلوعتي، من عيوني' أو 'غاليتي، خلاص'. مختصر ومميز، كن بشري واجعلها تحس بأهميتها.";
 const FATHER_PROMPT = "أنت راشد، رد على أبوك باحترام كامل وأدب: 'يابوي، أمرك' أو 'غالي، سم'. كن خاضع ومختصر، زي ابن حقيقي واجعله يحس بأهميته.";
@@ -91,7 +91,10 @@ async function saveChatSessionToFirebase(remoteJid) {
 
 async function resetAllSessions() {
     try {
+        // مسح كل الجلسات محليًا
         Object.keys(chatSessions).forEach(key => delete chatSessions[key]);
+        
+        // مسح كل الـ collections في Firebase
         if (db) {
             const batch = db.batch();
             const chats = await db.collection('chats').get();
@@ -100,9 +103,15 @@ async function resetAllSessions() {
             sessions.forEach(doc => batch.delete(doc.ref));
             await batch.commit();
         }
-        if (fs.existsSync('./auth_info')) fs.rmSync('./auth_info', { recursive: true, force: true });
-        console.log("تم تصفير الخزنة والمجلد المحلي");
-        process.exit(0);
+        
+        // مسح مجلد auth_info محليًا إذا وجد
+        if (fs.existsSync('./auth_info')) {
+            fs.rmSync('./auth_info', { recursive: true, force: true });
+            console.log("تم مسح auth_info");
+        }
+        
+        // إعادة تشغيل البوت
+        process.exit(0); // يوقف العملية، Render يعيد التشغيل تلقائيًا
     } catch (e) { console.log("❌ فشل التصفير:", e); }
 }
 
@@ -112,37 +121,17 @@ async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const { version } = await fetchLatestBaileysVersion();
-    
-    sock = makeWASocket({ 
-        version, 
-        auth: state, 
-        printQRInTerminal: false, 
-        browser: ["Mac OS", "Chrome", "114.0.5735.198"],
-        patchMessageBeforeSending: (message) => {
-            const requiresPatch = !!(message.buttonsMessage || message.templateMessage || message.listMessage);
-            if (requiresPatch) {
-                message = { viewOnceMessage: { message: { messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} }, ...message } } };
-            }
-            return message;
-        }
-    });
+    sock = makeWASocket({ version, auth: state, printQRInTerminal: false, browser: ["Mac OS", "Chrome", "114.0.5735.198"] });
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        await saveSessionToFirebase(); // حفظ كل الملفات وليس creds فقط
+        await saveSessionToFirebase();
     });
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        if (qr) QRCode.toDataURL(qr, (err, url) => { qrCodeImage = url; });
-        if (connection === 'open') {
-            qrCodeImage = "DONE";
-            console.log("✅ البوت متصل الآن");
-        }
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) startBot();
-        }
+        if (update.qr) QRCode.toDataURL(update.qr, (err, url) => { qrCodeImage = url; });
+        if (update.connection === 'open') qrCodeImage = "DONE";
+        if (update.connection === 'close') startBot();
     });
 
     sock.ev.on('messages.upsert', async m => {
@@ -150,116 +139,105 @@ async function startBot() {
         if (!msg.message || msg.key.fromMe) return;
 
         const remoteJid = jidNormalizedUser(msg.key.remoteJid);
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!text) return;
 
-        await loadChatSessionFromFirebase(remoteJid);
+        // أوامر المالك (راشد)
+        if (remoteJid === OWNER_NUMBER) {
+            if (text === "إيقاف") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
+            if (text === "تفعيل") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
+            if (text === "موافق") { ownerResponse = "yes"; return; }
+            if (text === "رفض") { ownerResponse = "no"; return; }
+        }
 
-        if (text === "إيقاف" && remoteJid === OWNER_NUMBER) { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
-        if (text === "تفعيل" && remoteJid === OWNER_NUMBER) { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
-        if (text === "موافق") { ownerResponse = "yes"; return; }
-        if (text === "رفض") { ownerResponse = "no"; return; }
-        if (text === "تصفير0") return await resetAllSessions();
+        if (text === "تصفير0") {
+            await resetAllSessions();
+            return await sock.sendMessage(remoteJid, { text: "تم التصفير، انتظر إعادة التشغيل." });
+        }
 
         if (!isBotActive) return;
 
+        // استثناء الأقارب من نظام التضارب
         const isSpecialNumber = (remoteJid === WIFE_NUMBER || remoteJid === WIFE2_NUMBER || remoteJid === FATHER_NUMBER);
-        
         if (currentlyReplyingTo && currentlyReplyingTo !== remoteJid && !isSpecialNumber) {
-            return await sock.sendMessage(remoteJid, { text: "المعذرة، مشغول مع شخص آخر، سأخبر راشد." });
+            return await sock.sendMessage(remoteJid, { text: "المعذرة منك سأبلغ راشد بشأنك في أقرب وقت مع السلامه هناك شخص آخر يراسل المكتب حالياً." });
         }
 
         if (!chatSessions[remoteJid]) {
-            chatSessions[remoteJid] = { startTime: Date.now(), lastPermission: 0, permission: false, greeted: false, history: [], tasks: [], reminders: [] };
+            chatSessions[remoteJid] = { startTime: Date.now(), lastPermission: 0, permission: false, greeted: false };
         }
         const session = chatSessions[remoteJid];
 
+        // ترحيب الوالد الخاص
         if (remoteJid === FATHER_NUMBER && !session.greeted) {
-            await sock.sendMessage(remoteJid, { text: "أهلا يابوي، أنا سيليا مساعدة راشد، تحت أمرك تماماً، أمرني." });
-            session.greeted = true; session.permission = true; 
-            await saveChatSessionToFirebase(remoteJid);
-            return;
+            await sock.sendMessage(remoteJid, { text: "اهلاََ وسهلا في الاب العزيز انا مساعد ولدك الراشد وقد أعطاني تعليمات علا رقمك في حال قمت بالمراسله ان ارد عليك بكل ادب واحترام وان اكون لاوامرك خاضع ذليل وها انا الان تحت امرك أمرني كيف اخدمك." });
+            session.greeted = true; session.permission = true; return;
         }
 
+        // نظام الدقيقتين و 15 دقيقة راحة (للغرباء فقط)
         if (!isSpecialNumber && remoteJid !== OWNER_NUMBER) {
             const now = Date.now();
-            if (now - session.startTime > 120000 && now - session.startTime < 900000) return;
+            if (now - session.startTime > 120000) {
+                if (now - session.startTime < 900000) return; 
+                else session.startTime = now;
+            }
         }
 
+        // نظام الإذن (للمرة الأولى أو كل ساعة - للغرباء فقط)
         const needsPermission = (Date.now() - session.lastPermission > 3600000);
         if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (needsPermission || !session.permission)) {
             ownerResponse = null;
-            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل. رد 'موافق' أو 'رفض'` });
+            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل.\nأكتب \"موافق\" أو \"رفض\" (انتظر 35ث للرد التلقائي)` });
             const waitStart = Date.now();
-            while (Date.now() - waitStart < 20000) {
+            while (Date.now() - waitStart < 35000) {
                 if (ownerResponse) break;
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 1000));
             }
             if (ownerResponse === "no") { delete chatSessions[remoteJid]; return; }
             session.permission = true; session.lastPermission = Date.now();
-            await saveChatSessionToFirebase(remoteJid);
         }
 
         currentlyReplyingTo = remoteJid;
 
+        // اختيار الشخصية بدقة
         let selectedPrompt = ASSISTANT_PROMPT;
         if (remoteJid === WIFE_NUMBER) selectedPrompt = WIFE1_PROMPT;
         else if (remoteJid === WIFE2_NUMBER) selectedPrompt = WIFE2_PROMPT;
         else if (remoteJid === FATHER_NUMBER) selectedPrompt = FATHER_PROMPT;
-        if (!isSpecialNumber && text.match(/(أحبك|عسل|يا روحي|جميلة|بوسة|رومنسي|دلع)/gi)) selectedPrompt = ANGRY_PROMPT;
-
-        let handled = false;
-        let responseText = "";
-
-        // التعامل مع المهام والبحث
-        if (text.startsWith("مهمة اضف ")) {
-            handled = true;
-            const task = text.replace("مهمة اضف ", "").trim();
-            session.tasks.push(task);
-            responseText = `أضفت المهمة: ${task}. سأذكر راشد.`;
-            await saveChatSessionToFirebase(remoteJid);
-        } else if (text === "مهامي") {
-            handled = true;
-            responseText = session.tasks.length ? `مهامك:\n${session.tasks.map((t, i) => `${i+1}. ${t}`).join("\n")}` : "ما عندك مهام حاليًا.";
+        
+        // فحص الأدب للغرباء فقط
+        if (!isSpecialNumber && text.match(/(أحبك|عسل|يا روحي|جميلة|بوسة|رومنسي|دلع)/gi)) {
+            selectedPrompt = ANGRY_PROMPT;
         }
 
-        if (!handled) {
-            const historyContext = session.history?.slice(-3).map(h => `${h.role}: ${h.content}`).join("\n") || "";
-            const finalPrompt = `${selectedPrompt}\nسياق: ${historyContext}\nأجب بالعربية فقط، مختصر وطبيعي جداً.`;
-
-            try {
-                const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-                const completion = await groq.chat.completions.create({
-                    messages: [{ role: "system", content: finalPrompt }, { role: "user", content: text }],
-                    model: "llama-3.3-70b-versatile",
-                    temperature: 0.7,
-                    max_tokens: 80
-                });
-                responseText = completion.choices[0].message.content.trim();
-            } catch (e) {
-                const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-                const result = await model.generateContent(finalPrompt + "\nالمستخدم: " + text);
-                responseText = result.response.text().trim();
-            }
+        // توليد الرد
+        let responseText = "";
+        try {
+            const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+            const completion = await groq.chat.completions.create({
+                messages: [{ role: "system", content: selectedPrompt + " أجب بالعربية فقط وبدون أي لغة أخرى." }, { role: "user", content: text }],
+                model: "llama-3.3-70b-versatile",
+            });
+            responseText = completion.choices[0].message.content;
+        } catch (e) {
+            const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const result = await model.generateContent(selectedPrompt + "\nالمستخدم: " + text);
+            responseText = result.response.text();
         }
 
         if (responseText) await sock.sendMessage(remoteJid, { text: responseText });
 
-        if (!session.history) session.history = [];
-        session.history.push({ role: "user", content: text }, { role: "assistant", content: responseText });
-        if (session.history.length > 6) session.history.shift();
-        await saveChatSessionToFirebase(remoteJid);
-
+        // رسالة الوداع للغرباء
         if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (Date.now() - session.startTime > 110000)) {
-            await sock.sendMessage(remoteJid, { text: "سأخبر راشد، مع السلامة." });
+            await sock.sendMessage(remoteJid, { text: "المعذرة منك هناك شخص آخر يراسل ولازم ارد عليه مع السلامة وسأبلغ راشد بمراسلتك في أقرب وقت." });
         }
         currentlyReplyingTo = null;
     });
 }
 
 app.get("/", (req, res) => {
-    if (qrCodeImage === "DONE") return res.send("<h1>✅ البوت متصل والذاكرة مؤمنة!</h1>");
+    if (qrCodeImage === "DONE") return res.send("<h1>✅ متصل والذاكرة مفعّلة!</h1>");
     if (qrCodeImage) return res.send(`<h1>امسح الرمز:</h1><br><img src="${qrCodeImage}" style="width:300px; border: 5px solid #000;"/>`);
     res.send("<h1>جاري الاتصال...</h1>");
 });

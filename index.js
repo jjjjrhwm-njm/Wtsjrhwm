@@ -82,6 +82,33 @@ async function saveChatSessionToFirebase(remoteJid) {
     }
 }
 
+async function resetAllSessions() {
+    try {
+        // مسح كل الجلسات محليًا
+        Object.keys(chatSessions).forEach(key => delete chatSessions[key]);
+        
+        // مسح كل الـ collections في Firebase
+        if (db) {
+            const chats = await db.collection('chats').get();
+            const sessions = await db.collection('session').get();
+            
+            chats.forEach(doc => doc.ref.delete());
+            sessions.forEach(doc => doc.ref.delete());
+        }
+        
+        // مسح مجلد auth_info محليًا إذا وجد (لكن في Render، يحتاج إعادة نشر)
+        if (fs.existsSync('./auth_info')) {
+            fs.rmSync('./auth_info', { recursive: true, force: true });
+            console.log("تم مسح auth_info");
+        }
+        
+        // إعادة تشغيل البوت (في Render، يحتاج إعادة نشر يدويًا)
+        process.exit(0); // يوقف العملية، Render راح يعيد التشغيل تلقائيًا
+    } catch (e) {
+        console.log("❌ فشل التصفير:", e);
+    }
+}
+
 async function startBot() {
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     await loadSessionFromFirebase();
@@ -111,12 +138,22 @@ async function startBot() {
 
         await loadChatSessionFromFirebase(remoteJid); // تحميل الجلسة لكل محادثة
 
-        // أوامر المالك (راشد)
+        // أوامر المالك بالعربي
         if (remoteJid === OWNER_NUMBER) {
-            if (text === "123123") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
-            if (text === "321321") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
-            if (text === "رد") { ownerResponse = "yes"; return; }
-            if (text === "لا") { ownerResponse = "no"; return; }
+            if (text === "إيقاف") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
+            if (text === "تفعيل") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
+            if (text === "موافق") { ownerResponse = "yes"; return; }
+            if (text === "رفض") { ownerResponse = "no"; return; }
+            if (text.startsWith("مسح ")) {
+                const targetJid = (text.split(" ")[1] + "@s.whatsapp.net");
+                delete chatSessions[targetJid];
+                if (db) await db.collection('chats').doc(targetJid).delete();
+                return await sock.sendMessage(remoteJid, { text: `تم مسح جلسة ${targetJid}` });
+            }
+            if (text === "تصفير0") {
+                await resetAllSessions();
+                return await sock.sendMessage(remoteJid, { text: "تم التصفير، انتظر إعادة التشغيل." });
+            }
         }
 
         if (!isBotActive) return;
@@ -153,7 +190,7 @@ async function startBot() {
         const needsPermission = (Date.now() - session.lastPermission > 3600000);
         if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (needsPermission || !session.permission)) {
             ownerResponse = null;
-            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل. رد 'رد' أو 'لا' (تلقائي بعد 20ث)` });
+            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل. رد 'موافق' أو 'رفض' (تلقائي بعد 20ث)` });
             const waitStart = Date.now();
             while (Date.now() - waitStart < 20000) { // اختصار الانتظار
                 if (ownerResponse) break;

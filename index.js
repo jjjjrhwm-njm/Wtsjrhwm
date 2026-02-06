@@ -13,24 +13,26 @@ const port = process.env.PORT || 10000;
 let qrCodeImage = "";
 let db;
 
-// --- سحب الأرقام من البيئة لضمان السرية والدقة ---
+// --- إعدادات الأرقام السرية (يتم سحبها من Render Environment) ---
 const OWNER_NUMBER = (process.env.OWNER_NUMBER || "966554526287") + "@s.whatsapp.net";
 const WIFE_NUMBER = (process.env.WIFE_NUMBER || "967782203551") + "@s.whatsapp.net";
 const WIFE2_NUMBER = (process.env.WIFE2_NUMBER || "966599741982") + "@s.whatsapp.net";
 const FATHER_NUMBER = (process.env.FATHER_NUMBER || "967783015253") + "@s.whatsapp.net";
+const EXEMPT_NUMBER = OWNER_NUMBER; 
 
 let isBotActive = true; 
 let currentlyReplyingTo = null; 
 let ownerResponse = null; 
 const chatSessions = {}; 
 
-// --- تعليمات الشخصيات الصارمة ---
-const ASSISTANT_PROMPT = "أنت مساعد الراشد. تحدث بالعربية فقط. ردودك مختصرة جداً. مهمتك: إبلاغ السائل أن راشد مشغول. الترحيب: (أهلاً بك معك مساعد الراشد وراشد مشغول الآن هل هناك شيء مهم أخبرني به وسأوصله للراشد في أقرب وقت). يمنع الرومنسية أو الفضول.";
-const WIFE1_PROMPT = "أنت الآن تتحدث مع زوجة راشد. كن حنوناً جداً ورومانسياً ومحباً. ردودك مختصرة ولكن دافئة جداً. تحدث بالعربية فقط.";
-const WIFE2_PROMPT = "أنت الآن تتحدث مع الزوجة الثانية (الدلع كله). كن في غاية الحنان والدلال والدلع. أشعرها أنها غالية جداً ومميزة. ردودك مختصرة وحنونة جداً. تحدث بالعربية فقط.";
-const FATHER_PROMPT = "أنت تتحدث مع والد راشد العزيز. كن في غاية الأدب والتبجيل. أنت خاضع تماماً لأوامره وتتحدث معه بكل احترام وتقدير. ردودك مختصرة ووقورة جداً.";
-const ANGRY_PROMPT = "المستخدم استخدم كلاماً غير لائق أو رومانسي معك وأنت مجرد مساعد. أظهر غضبك ورفضك التام بأسلوب وقور وحازم وأنهِ الكلام فوراً. لا تتردد في إظهار الغضب البشري.";
+// --- تعليمات الشخصيات (Prompts) ---
+const ASSISTANT_PROMPT = "أهلا بك، معك مساعد الراشد. راشد مشغول الآن، هل هناك شيء مهم أخبرني به وسأوصله للراشد في أقرب وقت. ردودك مختصره، وقورة، ومهنية.";
+const WIFE_PROMPT = "أنت تتحدث مع زوجة راشد الأولى. كن حنوناً جداً، رومانسياً، ومحباً لأقصى درجة. أنت تمثل قلب راشد تجاهها.";
+const WIFE2_PROMPT = "أنت تتحدث مع الرقم المقرب جداً لقلب راشد (الزوجة الثانية). تعامل بدلال ودلع وحنان فائق. كلماتك يجب أن تفيض بالرقة والاهتمام الخاص، كن حنوناً جداً وتصرف كأنك تعبر عن دلال راشد لها.";
+const FATHER_PROMPT = "أنت تتحدث مع والد راشد العزيز. كن في غاية الأدب والتبجيل والتعظيم. أنت خاضع تماماً لأوامره وتتحدث معه بكل احترام وتقدير.";
+const ANGRY_PROMPT = "المستخدم استخدم كلاماً غير لائق. أظهر غضبك البشري ورفضك التام لهذا الأسلوب بعبارات حازمة وأنهِ الحوار فوراً.";
 
+// إعداد الخزنة (Firebase)
 if (process.env.FIREBASE_CONFIG) {
     try {
         const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -43,33 +45,49 @@ if (process.env.FIREBASE_CONFIG) {
 }
 
 async function startBot() {
+    // التأكد من وجود المجلد
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
+
+    // --- منطق استعادة الجلسة لعدم طلب الرمز مجدداً ---
     if (db) {
         try {
             const doc = await db.collection('session').doc('whatsapp').get();
             if (doc.exists) {
                 fs.writeFileSync('./auth_info/creds.json', JSON.stringify(doc.data()));
-                console.log("📂 تم استعادة ملف الدخول من الخزنة");
+                console.log("📂 تم استعادة ملف الدخول من الخزنة بنجاح");
             }
-        } catch (e) { console.log("⚠️ لا توجد جلسة محفوظة"); }
+        } catch (e) { console.log("⚠️ فشل سحب الجلسة أو لا توجد جلسة محفوظة"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const { version } = await fetchLatestBaileysVersion();
-    const sock = makeWASocket({ version, auth: state, printQRInTerminal: false, browser: ["Mac OS", "Chrome", "114.0.5735.198"] });
+    
+    const sock = makeWASocket({
+        version,
+        auth: state,
+        printQRInTerminal: false,
+        browser: ["Mac OS", "Chrome", "114.0.5735.198"] 
+    });
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
+        // حفظ التحديثات فوراً في الخزنة
         if (db && fs.existsSync('./auth_info/creds.json')) {
-            const creds = JSON.parse(fs.readFileSync('./auth_info/creds.json'));
-            await db.collection('session').doc('whatsapp').set(creds);
+            try {
+                const creds = JSON.parse(fs.readFileSync('./auth_info/creds.json'));
+                await db.collection('session').doc('whatsapp').set(creds);
+            } catch (e) { console.log("❌ فشل حفظ التحديثات في الخزنة"); }
         }
     });
 
     sock.ev.on('connection.update', (update) => {
-        if (update.qr) QRCode.toDataURL(update.qr, (err, url) => { qrCodeImage = url; });
-        if (update.connection === 'open') qrCodeImage = "DONE";
-        if (update.connection === 'close') startBot();
+        const { connection, qr } = update;
+        if (qr) QRCode.toDataURL(qr, (err, url) => { qrCodeImage = url; });
+        if (connection === 'open') { qrCodeImage = "DONE"; console.log("✅ متصل الآن وشغال!"); }
+        if (connection === 'close') {
+            const shouldReconnect = update.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startBot();
+        }
     });
 
     sock.ev.on('messages.upsert', async m => {
@@ -80,7 +98,7 @@ async function startBot() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!text) return;
 
-        // أوامر المالك (راشد)
+        // أوامر المالك
         if (remoteJid === OWNER_NUMBER) {
             if (text === "123123") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
             if (text === "321321") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
@@ -90,65 +108,64 @@ async function startBot() {
 
         if (!isBotActive) return;
 
-        // استثناء الأقارب من نظام التضارب
-        const isSpecialNumber = (remoteJid === WIFE_NUMBER || remoteJid === WIFE2_NUMBER || remoteJid === FATHER_NUMBER);
-        if (currentlyReplyingTo && currentlyReplyingTo !== remoteJid && !isSpecialNumber) {
-            return await sock.sendMessage(remoteJid, { text: "المعذرة منك سأبلغ راشد بشأنك في أقرب وقت مع السلامه هناك شخص آخر يراسل المكتب حالياً." });
+        // منطق التضارب (مستثنى منه الزوجات والوالد)
+        if (currentlyReplyingTo && currentlyReplyingTo !== remoteJid && remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER) {
+            return await sock.sendMessage(remoteJid, { text: "سأبلغ راشد بشأنك في أقرب وقت مع السلامه هناك شخص آخر يراسل." });
         }
 
         if (!chatSessions[remoteJid]) {
-            chatSessions[remoteJid] = { startTime: Date.now(), lastPermission: 0, permission: false, greeted: false };
+            chatSessions[remoteJid] = { startTime: Date.now(), lastPermissionTime: 0, permissionGranted: false, fatherGreeted: false };
         }
         const session = chatSessions[remoteJid];
 
-        // ترحيب الوالد الخاص
-        if (remoteJid === FATHER_NUMBER && !session.greeted) {
+        // التعامل مع الوالد
+        if (remoteJid === FATHER_NUMBER && !session.fatherGreeted) {
             await sock.sendMessage(remoteJid, { text: "اهلاََ وسهلا في الاب العزيز انا مساعد ولدك الراشد وقد أعطاني تعليمات علا رقمك في حال قمت بالمراسله ان ارد عليك بكل ادب واحترام وان اكون لاوامرك خاضع ذليل وها انا الان تحت امرك أمرني كيف اخدمك." });
-            session.greeted = true; session.permission = true; return;
+            session.fatherGreeted = true;
+            session.permissionGranted = true;
+            return; 
         }
 
-        // نظام الدقيقتين و 15 دقيقة راحة (للغرباء فقط)
-        if (!isSpecialNumber && remoteJid !== OWNER_NUMBER) {
+        // نظام الدقيقتين (مستثنى منه الزوجات والوالد والمالك)
+        if (remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER && remoteJid !== EXEMPT_NUMBER) {
             const now = Date.now();
             if (now - session.startTime > 120000) {
-                if (now - session.startTime < 900000) return; 
+                if (now - session.startTime < 900000) return;
                 else session.startTime = now;
             }
         }
 
-        // نظام الإذن (للمرة الأولى أو كل ساعة - للغرباء فقط)
-        const needsPermission = (Date.now() - session.lastPermission > 3600000);
-        if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (needsPermission || !session.permission)) {
+        // نظام الإذن (مستثنى منه الزوجات والوالد)
+        const now = Date.now();
+        if (remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER && (!session.permissionGranted || (now - session.lastPermissionTime > 3600000))) {
             ownerResponse = null;
-            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل.\nأكتب "رد" أو "لا" (انتظر 35ث للرد التلقائي)` });
+            await sock.sendMessage(OWNER_NUMBER, { text: `📩 (${remoteJid.split('@')[0]}) يراسل الآن.\nهل أرد؟ (رد/لا) أو انتظر 35ث.` });
             const waitStart = Date.now();
             while (Date.now() - waitStart < 35000) {
                 if (ownerResponse) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            if (ownerResponse === "no") { delete chatSessions[remoteJid]; return; }
-            session.permission = true; session.lastPermission = Date.now();
+            if (ownerResponse === "no") return;
+            session.permissionGranted = true;
+            session.lastPermissionTime = Date.now();
         }
 
         currentlyReplyingTo = remoteJid;
 
-        // اختيار الشخصية بدقة
+        // اختيار الشخصية
         let selectedPrompt = ASSISTANT_PROMPT;
-        if (remoteJid === WIFE_NUMBER) selectedPrompt = WIFE1_PROMPT;
+        if (remoteJid === WIFE_NUMBER) selectedPrompt = WIFE_PROMPT;
         else if (remoteJid === WIFE2_NUMBER) selectedPrompt = WIFE2_PROMPT;
         else if (remoteJid === FATHER_NUMBER) selectedPrompt = FATHER_PROMPT;
-        
-        // فحص الأدب للغرباء فقط
-        if (!isSpecialNumber && text.match(/(أحبك|عسل|يا روحي|جميلة|بوسة|رومنسي|دلع)/gi)) {
-            selectedPrompt = ANGRY_PROMPT;
+        else if (text.match(/(أحبك|يا عمري|رومنسي|قليل أدب|حياتي|بوسة)/gi)) {
+             if (remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER) selectedPrompt = ANGRY_PROMPT;
         }
 
-        // توليد الرد
         let responseText = "";
         try {
             const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
             const completion = await groq.chat.completions.create({
-                messages: [{ role: "system", content: selectedPrompt + " أجب بالعربية فقط وبدون أي لغة أخرى." }, { role: "user", content: text }],
+                messages: [{ role: "system", content: selectedPrompt }, { role: "user", content: text }],
                 model: "llama-3.3-70b-versatile",
             });
             responseText = completion.choices[0].message.content;
@@ -161,9 +178,8 @@ async function startBot() {
 
         if (responseText) await sock.sendMessage(remoteJid, { text: responseText });
 
-        // رسالة الوداع للغرباء
-        if (!isSpecialNumber && remoteJid !== OWNER_NUMBER && (Date.now() - session.startTime > 110000)) {
-            await sock.sendMessage(remoteJid, { text: "المعذرة منك هناك شخص آخر يراسل ولازم ارد عليه مع السلامة وسأبلغ راشد بمراسلتك في أقرب وقت." });
+        if (remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER && remoteJid !== EXEMPT_NUMBER && (Date.now() - session.startTime > 115000)) {
+            await sock.sendMessage(remoteJid, { text: "المعذره منك هناك شخص آخر يراسل ولازم ارد عليه مع السلامه وسابلغ راشد انك قمت بمراسلته في أقرب وقت." });
         }
         currentlyReplyingTo = null;
     });

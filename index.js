@@ -13,7 +13,7 @@ const port = process.env.PORT || 10000;
 let qrCodeImage = "";
 let db;
 
-// --- إعدادات الأرقام السرية (يتم سحبها من Render Environment) ---
+// --- إعدادات الأرقام السرية ---
 const OWNER_NUMBER = (process.env.OWNER_NUMBER || "966554526287") + "@s.whatsapp.net";
 const WIFE_NUMBER = (process.env.WIFE_NUMBER || "967782203551") + "@s.whatsapp.net";
 const WIFE2_NUMBER = (process.env.WIFE2_NUMBER || "966599741982") + "@s.whatsapp.net";
@@ -45,21 +45,21 @@ if (process.env.FIREBASE_CONFIG) {
 }
 
 async function startBot() {
-    // التأكد من وجود المجلد
-    if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
+    // --- مجلد جديد لضمان ظهور الكود ---
+    const sessionFolder = './whatsapp_auth_v3';
+    if (!fs.existsSync(sessionFolder)) fs.mkdirSync(sessionFolder);
 
-    // --- منطق استعادة الجلسة لعدم طلب الرمز مجدداً ---
     if (db) {
         try {
             const doc = await db.collection('session').doc('whatsapp').get();
             if (doc.exists) {
-                fs.writeFileSync('./auth_info/creds.json', JSON.stringify(doc.data()));
-                console.log("📂 تم استعادة ملف الدخول من الخزنة بنجاح");
+                fs.writeFileSync(`${sessionFolder}/creds.json`, JSON.stringify(doc.data()));
+                console.log("📂 تم استعادة ملف الدخول");
             }
-        } catch (e) { console.log("⚠️ فشل سحب الجلسة أو لا توجد جلسة محفوظة"); }
+        } catch (e) { console.log("⚠️ فشل سحب الجلسة"); }
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
     const { version } = await fetchLatestBaileysVersion();
     
     const sock = makeWASocket({
@@ -71,21 +71,28 @@ async function startBot() {
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        // حفظ التحديثات فوراً في الخزنة
-        if (db && fs.existsSync('./auth_info/creds.json')) {
+        if (db && fs.existsSync(`${sessionFolder}/creds.json`)) {
             try {
-                const creds = JSON.parse(fs.readFileSync('./auth_info/creds.json'));
+                const creds = JSON.parse(fs.readFileSync(`${sessionFolder}/creds.json`));
                 await db.collection('session').doc('whatsapp').set(creds);
-            } catch (e) { console.log("❌ فشل حفظ التحديثات في الخزنة"); }
+            } catch (e) { console.log("❌ فشل حفظ التحديثات"); }
         }
     });
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, qr } = update;
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, qr, lastDisconnect } = update;
         if (qr) QRCode.toDataURL(qr, (err, url) => { qrCodeImage = url; });
-        if (connection === 'open') { qrCodeImage = "DONE"; console.log("✅ متصل الآن وشغال!"); }
+        if (connection === 'open') { qrCodeImage = "DONE"; console.log("✅ متصل الآن!"); }
         if (connection === 'close') {
-            const shouldReconnect = update.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            
+            // --- الحل الجذري: مسح الجلسة التالفة تلقائياً ---
+            if (statusCode === 401) {
+                console.log("🚮 جلسة تالفة.. يتم المسح لظهور الـ QR");
+                if (fs.existsSync(sessionFolder)) fs.rmSync(sessionFolder, { recursive: true, force: true });
+                if (db) await db.collection('session').doc('whatsapp').delete().catch(e => {});
+            }
             if (shouldReconnect) startBot();
         }
     });
@@ -98,7 +105,6 @@ async function startBot() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!text) return;
 
-        // أوامر المالك
         if (remoteJid === OWNER_NUMBER) {
             if (text === "123123") { isBotActive = false; return await sock.sendMessage(remoteJid, { text: "⚠️ تم إيقاف الردود." }); }
             if (text === "321321") { isBotActive = true; return await sock.sendMessage(remoteJid, { text: "✅ تم تفعيل الردود." }); }
@@ -108,7 +114,6 @@ async function startBot() {
 
         if (!isBotActive) return;
 
-        // منطق التضارب (مستثنى منه الزوجات والوالد)
         if (currentlyReplyingTo && currentlyReplyingTo !== remoteJid && remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER) {
             return await sock.sendMessage(remoteJid, { text: "سأبلغ راشد بشأنك في أقرب وقت مع السلامه هناك شخص آخر يراسل." });
         }
@@ -118,7 +123,6 @@ async function startBot() {
         }
         const session = chatSessions[remoteJid];
 
-        // التعامل مع الوالد
         if (remoteJid === FATHER_NUMBER && !session.fatherGreeted) {
             await sock.sendMessage(remoteJid, { text: "اهلاََ وسهلا في الاب العزيز انا مساعد ولدك الراشد وقد أعطاني تعليمات علا رقمك في حال قمت بالمراسله ان ارد عليك بكل ادب واحترام وان اكون لاوامرك خاضع ذليل وها انا الان تحت امرك أمرني كيف اخدمك." });
             session.fatherGreeted = true;
@@ -126,7 +130,6 @@ async function startBot() {
             return; 
         }
 
-        // نظام الدقيقتين (مستثنى منه الزوجات والوالد والمالك)
         if (remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER && remoteJid !== EXEMPT_NUMBER) {
             const now = Date.now();
             if (now - session.startTime > 120000) {
@@ -135,7 +138,6 @@ async function startBot() {
             }
         }
 
-        // نظام الإذن (مستثنى منه الزوجات والوالد)
         const now = Date.now();
         if (remoteJid !== WIFE_NUMBER && remoteJid !== WIFE2_NUMBER && remoteJid !== FATHER_NUMBER && (!session.permissionGranted || (now - session.lastPermissionTime > 3600000))) {
             ownerResponse = null;
@@ -152,7 +154,6 @@ async function startBot() {
 
         currentlyReplyingTo = remoteJid;
 
-        // اختيار الشخصية
         let selectedPrompt = ASSISTANT_PROMPT;
         if (remoteJid === WIFE_NUMBER) selectedPrompt = WIFE_PROMPT;
         else if (remoteJid === WIFE2_NUMBER) selectedPrompt = WIFE2_PROMPT;

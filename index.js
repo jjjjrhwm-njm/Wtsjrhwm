@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, delay } = require("@whiskeysockets/baileys"); // أضفنا delay
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, delay } = require("@whiskeysockets/baileys");
 const admin = require("firebase-admin");
 const express = require("express");
 const QRCode = require("qrcode");
@@ -10,11 +10,14 @@ require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 10000;
-let pairingCode = ""; // لتخزين كود الربط بدلاً من الصورة
+let qrCodeImage = "";
+let pairingCode = ""; 
 let db;
 
-// --- سحب الأرقام من البيئة لضمان السرية والدقة ---
-const OWNER_NUMBER = (process.env.OWNER_NUMBER || "966554526287") + "@s.whatsapp.net";
+// --- الرقم المعتمد للربط هو رقمك مباشرة ---
+let cleanNumber = "966554526287";
+
+const OWNER_NUMBER = cleanNumber + "@s.whatsapp.net";
 const WIFE_NUMBER = (process.env.WIFE_NUMBER || "967782203551") + "@s.whatsapp.net";
 const WIFE2_NUMBER = (process.env.WIFE2_NUMBER || "966599741982") + "@s.whatsapp.net";
 const FATHER_NUMBER = (process.env.FATHER_NUMBER || "967783015253") + "@s.whatsapp.net";
@@ -56,23 +59,26 @@ async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const { version } = await fetchLatestBaileysVersion();
-    
-    // إعدادات البوت مع دعم كود الربط
     const sock = makeWASocket({ 
         version, 
         auth: state, 
         printQRInTerminal: false, 
-        browser: ["Chrome (Linux)", "", ""] // ضروري لعمل كود الربط
+        browser: ["Ubuntu", "Chrome", "20.0.04"] 
     });
 
-    // منطق طلب كود الربط
+    // طلب الكود للرقم المصفى تلقائياً
     if (!sock.authState.creds.registered) {
-        const phoneNumber = process.env.OWNER_NUMBER || "966554526287";
+        console.log(`⏳ جاري طلب كود الربط للرقم: ${cleanNumber}`);
         setTimeout(async () => {
-            let code = await sock.requestPairingCode(phoneNumber);
-            pairingCode = code?.match(/.{1,4}/g)?.join("-") || code;
-            console.log(`🔗 كود الربط الخاص بك هو: ${pairingCode}`);
-        }, 3000);
+            try {
+                let code = await sock.requestPairingCode(cleanNumber);
+                pairingCode = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log(`🔗 كود الربط: ${pairingCode}`);
+            } catch (err) {
+                console.log("❌ فشل طلب الكود:", err);
+                pairingCode = "RETRY";
+            }
+        }, 6000); 
     }
 
     sock.ev.on('creds.update', async () => {
@@ -85,9 +91,10 @@ async function startBot() {
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
+        if (update.qr) QRCode.toDataURL(update.qr, (err, url) => { qrCodeImage = url; });
         if (connection === 'open') {
+            qrCodeImage = "DONE";
             pairingCode = "DONE";
-            console.log("✅ تم الاتصال بنجاح!");
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -193,9 +200,24 @@ async function startBot() {
 }
 
 app.get("/", (req, res) => {
-    if (pairingCode === "DONE") return res.send("<h1>✅ متصل والذاكرة مفعّلة!</h1>");
-    if (pairingCode) return res.send(`<h1>كود الربط الخاص بك:</h1><br><div style="font-size: 50px; font-weight: bold; color: blue; border: 2px solid #000; padding: 20px; display: inline-block;">${pairingCode}</div><p>افتح واتساب > الأجهزة المرتبطة > ربط باستخدام رقم الهاتف > وأدخل هذا الكود.</p>`);
-    res.send("<h1>جاري إنشاء كود الربط... انتظر ثواني</h1>");
+    if (pairingCode === "DONE") return res.send("<h1>✅ تم الربط بنجاح!</h1>");
+    if (pairingCode === "RETRY") return res.send("<h1>⚠️ حدث خطأ، حدث الصفحة لطلب كود جديد</h1>");
+    if (pairingCode) return res.send(`
+        <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
+            <h2>كود الربط لرقمك (${cleanNumber})</h2>
+            <div style="font-size: 60px; font-weight: bold; color: #25D366; background: #f0f0f0; padding: 20px; border-radius: 10px; display: inline-block; letter-spacing: 5px;">
+                ${pairingCode}
+            </div>
+            <p style="font-size: 18px; margin-top: 20px;">
+                1. افتح واتساب <br>
+                2. الأجهزة المرتبطة <br>
+                3. ربط جهاز <br>
+                4. الربط باستخدام رقم الهاتف <br>
+                5. أدخل الكود أعلاه
+            </p>
+        </div>
+    `);
+    res.send("<h1>جاري إنشاء الكود... انتظر قليلاً</h1>");
 });
 
 app.listen(port, () => startBot());

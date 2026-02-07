@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, delay } = require("@whiskeysockets/baileys"); // أضفنا delay
 const admin = require("firebase-admin");
 const express = require("express");
 const QRCode = require("qrcode");
@@ -10,7 +10,7 @@ require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 10000;
-let qrCodeImage = "";
+let pairingCode = ""; // لتخزين كود الربط بدلاً من الصورة
 let db;
 
 // --- سحب الأرقام من البيئة لضمان السرية والدقة ---
@@ -56,7 +56,24 @@ async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     const { version } = await fetchLatestBaileysVersion();
-    const sock = makeWASocket({ version, auth: state, printQRInTerminal: false, browser: ["Mac OS", "Chrome", "114.0.5735.198"] });
+    
+    // إعدادات البوت مع دعم كود الربط
+    const sock = makeWASocket({ 
+        version, 
+        auth: state, 
+        printQRInTerminal: false, 
+        browser: ["Chrome (Linux)", "", ""] // ضروري لعمل كود الربط
+    });
+
+    // منطق طلب كود الربط
+    if (!sock.authState.creds.registered) {
+        const phoneNumber = process.env.OWNER_NUMBER || "966554526287";
+        setTimeout(async () => {
+            let code = await sock.requestPairingCode(phoneNumber);
+            pairingCode = code?.match(/.{1,4}/g)?.join("-") || code;
+            console.log(`🔗 كود الربط الخاص بك هو: ${pairingCode}`);
+        }, 3000);
+    }
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
@@ -67,9 +84,15 @@ async function startBot() {
     });
 
     sock.ev.on('connection.update', (update) => {
-        if (update.qr) QRCode.toDataURL(update.qr, (err, url) => { qrCodeImage = url; });
-        if (update.connection === 'open') qrCodeImage = "DONE";
-        if (update.connection === 'close') startBot();
+        const { connection, lastDisconnect } = update;
+        if (connection === 'open') {
+            pairingCode = "DONE";
+            console.log("✅ تم الاتصال بنجاح!");
+        }
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startBot();
+        }
     });
 
     sock.ev.on('messages.upsert', async m => {
@@ -170,9 +193,9 @@ async function startBot() {
 }
 
 app.get("/", (req, res) => {
-    if (qrCodeImage === "DONE") return res.send("<h1>✅ متصل والذاكرة مفعّلة!</h1>");
-    if (qrCodeImage) return res.send(`<h1>امسح الرمز:</h1><br><img src="${qrCodeImage}" style="width:300px; border: 5px solid #000;"/>`);
-    res.send("<h1>جاري الاتصال...</h1>");
+    if (pairingCode === "DONE") return res.send("<h1>✅ متصل والذاكرة مفعّلة!</h1>");
+    if (pairingCode) return res.send(`<h1>كود الربط الخاص بك:</h1><br><div style="font-size: 50px; font-weight: bold; color: blue; border: 2px solid #000; padding: 20px; display: inline-block;">${pairingCode}</div><p>افتح واتساب > الأجهزة المرتبطة > ربط باستخدام رقم الهاتف > وأدخل هذا الكود.</p>`);
+    res.send("<h1>جاري إنشاء كود الربط... انتظر ثواني</h1>");
 });
 
 app.listen(port, () => startBot());
